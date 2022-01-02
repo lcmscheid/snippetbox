@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"flag"
+	"github.com/lcmscheid/snippetbox/pkg/models/mysql"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -17,9 +19,11 @@ type Config struct {
 }
 
 type application struct {
-	errorLog *log.Logger
-	infoLog  *log.Logger
-	config   *Config
+	errorLog      *log.Logger
+	infoLog       *log.Logger
+	config        *Config
+	snippets      *mysql.SnippetModel
+	templateCache map[string]*template.Template
 }
 
 func main() {
@@ -40,6 +44,13 @@ func main() {
 		app.errorLog.Fatal(err)
 	}
 	defer db.Close()
+	app.snippets = &mysql.SnippetModel{DB: db}
+
+	templateCache, err := newTemplateCache("./ui/html")
+	if err != nil {
+		app.errorLog.Fatal(err)
+	}
+	app.templateCache = templateCache
 
 	srv := &http.Server{
 		Addr:     app.config.Addr,
