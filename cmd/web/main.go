@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"flag"
 	"html/template"
@@ -8,7 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/alexedwards/scs/mysqlstore"
+	"github.com/alexedwards/scs/v2"
 	"github.com/go-playground/form/v4"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lcmscheid/snippetbox/internal/models"
@@ -19,11 +23,12 @@ type neuteredFileSystem struct {
 }
 
 type application struct {
-	errorLog      *log.Logger
-	infoLog       *log.Logger
-	snippets      *models.SnippetModel
-	templateCache map[string]*template.Template
-	formDecoder   *form.Decoder
+	errorLog       *log.Logger
+	infoLog        *log.Logger
+	snippets       *models.SnippetModel
+	templateCache  map[string]*template.Template
+	formDecoder    *form.Decoder
+	sessionManager *scs.SessionManager
 }
 
 func (nfs neuteredFileSystem) Open(path string) (http.File, error) {
@@ -64,6 +69,7 @@ func openDB(dsn string) (*sql.DB, error) {
 func main() {
 	addr := flag.String("addr", ":4000", "HTTP network address")
 	dsn := flag.String("dsn", "web:pass@/snippetbox?parseTime=true", "MySQL data source name")
+	runTLS := flag.Bool("tls", true, "true to run a over HTTPS or false to run HTTP")
 
 	flag.Parse()
 
@@ -81,6 +87,10 @@ func main() {
 		errorLog.Fatal(err)
 	}
 
+	sessionManager := scs.New()
+	sessionManager.Store = mysqlstore.New(db)
+	sessionManager.Lifetime = 12 * time.Hour
+
 	app := &application{
 		errorLog:      errorLog,
 		infoLog:       infoLog,
@@ -90,12 +100,27 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:     *addr,
-		ErrorLog: errorLog,
-		Handler:  app.routes(),
+		Addr:         *addr,
+		ErrorLog:     errorLog,
+		IdleTimeout:  time.Minute,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
-	infoLog.Printf("Starting server on %s", *addr)
-	err = srv.ListenAndServe()
+	if *runTLS {
+		sessionManager.Cookie.Secure = true
+		app.sessionManager = sessionManager
+		srv.TLSConfig = &tls.Config{
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256},
+		}
+		srv.Handler = app.routes()
+		infoLog.Printf("Starting HTTPS server on %s", *addr)
+		err = srv.ListenAndServeTLS("./tls/cert.pem", "./tls/key.pem")
+	} else {
+		app.sessionManager = sessionManager
+		srv.Handler = app.routes()
+		infoLog.Printf("Starting HTTP server on %s", *addr)
+		err = srv.ListenAndServe()
+	}
 	errorLog.Fatal(err)
 }
